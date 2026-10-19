@@ -1,0 +1,423 @@
+================================================================================
+  VIBEGROWTH  -  Differential Growth for Blender
+  Version 1.0.0   |   Blender 4.2 or newer (tested in Blender 5.2.2 LTS)
+================================================================================
+
+VibeGrowth grows open meshes and edge curves over the timeline. Each frame,
+the edges of the shape get longer, nearby parts push each other away, and
+edges that get too long are split in two. A flat disc turns into ruffled,
+lettuce- or coral-like sheets. A ring of edges turns into a meandering
+maze-like line.
+
+The simulation runs every time the frame changes. You can drive it with
+vertex weights (re-read every frame), a static mask, animated noise, and a
+falloff that slows growth away from the centre of the design.
+
+
+--------------------------------------------------------------------------------
+CONTENTS
+--------------------------------------------------------------------------------
+  1. Installation
+  2. Quick start
+  3. Recommended seed geometry
+  4. How the simulation works
+  5. Settings reference
+  6. Driving growth with weights and noise
+  7. Output attributes (for shaders and Geometry Nodes)
+  8. Caching, scrubbing and rendering
+  9. Tips and troubleshooting
+ 10. Performance
+ 11. File overview
+
+
+================================================================================
+1. INSTALLATION
+================================================================================
+
+  1. In Blender: Edit > Preferences > Get Extensions.
+  2. Open the drop-down arrow (top right) and choose "Install from Disk...".
+  3. Select  vibegrowth-1.0.0.zip
+  4. Make sure the add-on is enabled.
+
+The tools appear in the 3D Viewport sidebar (press N) in the "VibeGrowth" tab.
+
+To rebuild the zip after changing the source code, run:
+  blender --command extension build --source-dir <path>\vibegrowth --output-dir <path>
+
+
+================================================================================
+2. QUICK START
+================================================================================
+
+  1. Add a seed:  Add > Mesh > Circle
+     - Fill Type "Ngon" or "Triangle Fan" gives a growing SHEET (surface).
+     - Fill Type "Nothing" gives a growing LINE (wire curve).
+  2. Optional: in Weight Paint mode, paint a vertex group called "growth"
+     (animated weight) and/or one called "mask" (static mask). Groups with
+     these exact names are linked automatically.
+  3. With the seed selected, open the sidebar (N) > VibeGrowth and click
+     "Create Growth from Seed".
+  4. Press Play or scrub the timeline. The new object "<Seed>_Growth" grows
+     frame by frame.
+
+What happens when you click "Create Growth from Seed":
+  - A new object "<Seed>_Growth" is created. It has the same transform and
+    materials as the seed.
+  - The seed is set to wireframe display and hidden from renders. It stays
+    in the scene as the source for the weights.
+  - Split Length and Repulsion Distance are set to 1.2 x the seed's average
+    edge length. Collision Distance is set to 0.4 x that length.
+
+After changing settings, press "Reset Simulation". This re-runs the
+simulation from the start frame up to the current frame.
+
+
+================================================================================
+3. RECOMMENDED SEED GEOMETRY
+================================================================================
+
+  VibeGrowth is made for OPEN geometry. This means meshes with a free border,
+  or edges with no faces at all.
+
+  Good seeds:
+    - A filled circle or disc (grows a ruffled sheet)
+    - A ring or circle of edges with no faces (grows a 2D or 3D line)
+    - Any open surface: a grid, a half-sphere, a strip, a leaf shape
+    - Open edge paths (curves converted to mesh)
+
+  Not intended:
+    - Closed volumes (cubes, spheres). They have no free border, so nothing
+      grows unless Interior Growth is above 0.
+
+  Size and resolution:
+    - Around 32-64 vertices on a circle of radius 0.5 works well.
+    - The seed is remeshed to the Split Length when the simulation starts.
+      Large faces are cut into small triangles at frame 1.
+    - Quads and ngons are triangulated automatically.
+
+
+================================================================================
+4. HOW THE SIMULATION WORKS
+================================================================================
+
+  Every edge stores a "rest length", the length it wants to have. Each
+  solver step runs in this order:
+
+  1. GROWTH FACTOR per vertex
+       growth = Initial Mask x Growth Weight x Noise x Core Falloff x Rim Factor
+     Rim Factor = 1 for border vertices, "Interior Growth" for all others.
+
+  2. GROW
+     Each edge's rest length increases by
+         Growth Speed x (average growth of its two vertices) per frame.
+
+  3. EDGE SPRINGS
+     Edges are pulled toward their rest length. A longer rim with a fixed
+     interior has to buckle, and that creates the ruffles and folds.
+
+  4. REPULSION AND COLLISION
+     Vertices closer than the Repulsion Distance push each other apart. The
+     push gets exponentially stronger the closer they are. Vertices closer
+     than the Collision Distance are pushed apart hard. Direct neighbours
+     (up to 2 edges apart) are ignored, so repulsion acts only where
+     different parts of the shape fold into each other.
+
+  5. SMOOTHING
+     Vertices move slightly toward the average of their neighbours. Border
+     vertices only smooth along the border, so the rim stays clean. This
+     acts as bending stiffness: more smoothing gives broader, softer folds.
+
+  6. JITTER
+     A small random nudge, only where things are growing. It breaks perfect
+     symmetry so buckling can start.
+
+  7. REMESH
+     When an edge's rest length is longer than the Split Length, the edge is
+     cut in half and the faces around it are re-triangulated. Edges that get
+     stretched past 2 x Split Length are also split, as a safety net. New
+     vertices inherit mask, weight and rest position from their parents.
+
+  Steps 1-7 run "Steps per Frame" times for every timeline frame.
+
+
+================================================================================
+5. SETTINGS REFERENCE
+================================================================================
+
+  Panel buttons
+  -------------
+  Reset Simulation        Clears the cache and re-simulates up to the
+                          current frame with the current settings.
+  Freeze Current Frame    Copies the current shape into a new static object
+                          named "<Growth>_f<frame>".
+  Vertices                Live vertex count of the growth mesh.
+
+  Seed & Time
+  -----------
+  Seed Object        (-)      The mesh the growth starts from. It is also
+                              the source of the mask and weight groups.
+  Random Seed        0        Changes the noise pattern and the jitter. Use
+                              it to get different results from the same
+                              setup.
+  Start Frame        scene    The frame where the simulation resets to the
+                              seed.
+  Steps per Frame    4        Solver steps per frame. More steps are more
+                              stable and smoother, but slower. Total growth
+                              per frame stays the same.
+
+  Growth
+  ------
+  Growth Speed       0.05     How much the edges grow per frame at weight 1
+                              (0.05 = 5% longer per frame). The main speed
+                              control.
+  Interior Growth    0.25     Growth of non-border vertices compared to the
+                              rim. 0 = only the rim grows (thin frill).
+                              Higher = the sheet grows inward too (fuller,
+                              wider folds).
+  Initial Mask       (-)      STATIC vertex group on the seed. Read once at
+                              the start frame. 0 = this area never grows,
+                              1 = full growth.
+  Growth Weight      (-)      ANIMATED vertex group or float attribute on
+                              the seed. Re-read EVERY frame. See section 6.
+  Weight Space       Seed     Seed (Rest): each vertex reads the weight at
+                              its original spot on the seed. A painted
+                              pattern stays attached to the same part of the
+                              growth.
+                              Current Position: each vertex reads the weight
+                              where it is now. Use this for moving weight
+                              fields, such as a Vertex Weight Proximity
+                              modifier.
+
+  Noise
+  -----
+  Noise Influence    0.6      How strongly noise varies the growth rate. 0
+                              = off. 1 = growth can drop to zero in the dark
+                              parts of the noise.
+  Noise Scale        2.0      Size of the noise pattern. Higher = smaller,
+                              busier variation.
+  Noise Speed        0.05     How fast the noise moves per frame. 0 = static
+                              noise.
+  Noise Space        Seed     Seed (Rest): the noise pattern is attached to
+                              the growth.
+                              Current Position: the noise is evaluated in
+                              space, and the growth moves through it.
+  Jitter             0.01     Random displacement that triggers buckling.
+                              Higher = more chaotic, crinkled detail.
+
+  Falloff from Core
+  -----------------
+  Core               (-)      Optional object (for example an Empty) that
+                              marks the centre of the design. Without one,
+                              the seed's centre is used. The Core can be
+                              animated.
+  Core Radius        0.0      Inside this distance from the core, growth is
+                              not reduced.
+  Growth Decline     0.0      How fast growth fades beyond the core radius:
+                                 factor = exp(-Decline x (distance - Radius))
+                              0 = no decline. Around 2-5 gives a clear
+                              slowdown at the edges.
+
+  Repulsion & Collision
+  ---------------------
+  Repulsion Distance  auto    Range of the soft push between vertices.
+                              About the same as the Split Length is a good
+                              start.
+  Repulsion Strength  0.5     How strong the push is.
+  Repulsion Falloff   3.0     How sharply the push rises as vertices get
+                              closer. 0 = linear. Higher = weak at range,
+                              very strong up close (exponential).
+  Collision Distance  auto    Hard minimum distance. Vertices closer than
+                              this are always pushed apart. Keeps surfaces
+                              from passing through each other.
+
+  Remesh
+  ------
+  Split Length       auto     Edge length at which an edge is split in half
+                              and the faces around it are re-triangulated.
+                              Smaller = finer detail, but many more
+                              vertices.
+  Max Vertices       20000    Safety limit. When it is reached, growth
+                              stops and the mesh holds its shape.
+
+  Solver (collapsed by default)
+  ------
+  Edge Stiffness      1.0     How strongly edges keep their rest length.
+                              Lower = stretchier, softer sheet.
+  Edge Iterations     2       Spring passes per step. More = stiffer and
+                              more accurate.
+  Smoothing           0.5     Bending stiffness. Higher = broad, smooth
+                              folds. Lower = small, crinkled detail.
+  Lock to Seed Plane  off     Keeps everything flat on the seed's plane.
+                              Turn it ON for 2D line growth (maze patterns).
+                              Leave it OFF for 3D ruffled sheets.
+  Cache Frames        on      Keeps every simulated frame in memory, so
+                              scrubbing back is instant.
+
+
+================================================================================
+6. DRIVING GROWTH WITH WEIGHTS AND NOISE
+================================================================================
+
+  Initial Mask vs. Growth Weight
+  ------------------------------
+  The two are multiplied together and are completely separate:
+
+    Initial Mask   - read ONCE at the start frame and never re-read.
+                     Use it to set where growth can happen at all.
+    Growth Weight  - read on EVERY frame. Use it to animate where and when
+                     things grow during the shot.
+
+  Ways to animate the Growth Weight
+  ---------------------------------
+  Vertex weights can't be keyframed directly, but modifiers on the SEED are
+  evaluated before the weight is read. So any of these work:
+
+  a) Vertex Weight Proximity modifier
+     Weight depends on the distance to an animated object. Use Weight Space
+     = "Current Position" if the effect should follow where the growth is
+     now.
+
+  b) Vertex Weight Edit / Mix modifiers
+     Animate their factors or textures.
+
+  c) Geometry Nodes (most flexible)
+     Add a Geometry Nodes modifier to the seed with a "Store Named
+     Attribute" node:
+         Name: growth   Type: Float   Domain: Point
+         Value: e.g. a Noise Texture (4D) with W driven by Scene Time
+     Then type "growth" in the Growth Weight field. VibeGrowth reads float
+     point attributes as well as vertex groups. (Tested in 5.2: an animated
+     4D noise attribute is picked up correctly on every frame.)
+
+  Noise
+  -----
+  The built-in noise multiplies the growth rate:
+      factor = max(0, 1 + Influence x noise)
+  Noise Speed moves the pattern over time, so the growth zones shift as the
+  animation plays.
+
+
+================================================================================
+7. OUTPUT ATTRIBUTES
+================================================================================
+
+  The growth mesh carries these attributes. Use them in shaders (Attribute
+  node) or in Geometry Nodes modifiers stacked on the growth object:
+
+    vg_growth    Point  Float   Final growth factor of the last step.
+                                Good for colouring active growth zones.
+    vg_age       Point  Float   Frame in which the vertex was created.
+                                Color by age: (frame - vg_age).
+    vg_weight    Point  Float   Growth weight sampled this frame.
+    vg_mask      Point  Float   Static mask value.
+    vg_rest_co   Point  Vector  The vertex's original position on the seed.
+                                Usable as stable texture coordinates.
+    vg_rest_len  Edge   Float   Current rest length of each edge.
+
+  Typical Geometry Nodes add-ons on the growth object:
+    - Thickness: an Extrude Mesh or Solidify modifier gives the sheet depth.
+    - Line growth: Mesh to Curve > Curve to Mesh (with a circle profile)
+      turns the wire maze into renderable tubes.
+    - Subdivision Surface + Shade Smooth for a soft, organic look.
+
+
+================================================================================
+8. CACHING, SCRUBBING AND RENDERING
+================================================================================
+
+  - Frames are simulated in order. Jumping ahead simulates every frame in
+    between.
+  - With Cache Frames on, simulated frames are stored in memory. Scrubbing
+    backward loads the cached frame instantly.
+  - Going to or before the Start Frame resets the growth to the seed.
+  - The cache is NOT saved with the .blend file. After reopening the file,
+    the simulation re-runs from the start frame when you scrub.
+  - Settings changes apply to the frames simulated after the change. Press
+    "Reset Simulation" to apply them from the start.
+
+  Rendering:
+  - Viewport and normal frame renders work. The growth updates on every
+    frame change.
+  - For safe final renders, especially on render farms, bake the result
+    first:
+      * "Freeze Current Frame" for stills, or
+      * File > Export > Alembic (.abc) over the frame range, then render the
+        imported Alembic.
+
+
+================================================================================
+9. TIPS AND TROUBLESHOOTING
+================================================================================
+
+  Rim looks crinkled or jagged
+      Lower Growth Speed (e.g. 0.03), raise Smoothing (0.6-0.8), or raise
+      Steps per Frame.
+
+  Folds are too soft or nothing buckles
+      Lower Smoothing, raise Jitter a little, or lower Interior Growth so
+      the rim outgrows the inside.
+
+  Growth stops suddenly
+      Max Vertices was reached. Raise it, or raise the Split Length.
+
+  Mesh passes through itself
+      Raise Collision Distance and Repulsion Strength. Keep the Repulsion
+      Distance about the same as the Split Length.
+
+  Whole sheet swells like a balloon
+      The Repulsion Distance is much larger than the Split Length. Lower it.
+
+  Line (wire) growth goes out of plane
+      Turn on "Lock to Seed Plane".
+
+  Nothing happens
+      - Check that the growth object (not the seed) has a Seed Object set.
+      - The Initial Mask or Growth Weight may be 0 everywhere. Leave the
+        fields empty to use full growth.
+      - Closed meshes have no border. Raise Interior Growth.
+
+  Different result each time I change settings
+      That's expected. The result depends on the whole history. Press Reset
+      Simulation after changing settings. Use Random Seed for controlled
+      variations.
+
+  Errors are printed to the system console (Window > Toggle System Console)
+  with the prefix "VibeGrowth:". Playback keeps running when an error
+  happens.
+
+
+================================================================================
+10. PERFORMANCE
+================================================================================
+
+  Measured in Blender 5.2.2 (4 steps per frame):
+      ~1,000 -  4,000 vertices    0.06 - 0.3 s per frame
+      ~20,000 vertices            ~1.2 s per frame
+
+  Cost rises with the vertex count and Steps per Frame. For a fast look,
+  preview with a larger Split Length, then lower it for the final version.
+  Each cached frame holds a full copy of the mesh in memory. For very long
+  or dense simulations, turn Cache Frames off if memory gets tight.
+
+
+================================================================================
+11. FILE OVERVIEW
+================================================================================
+
+  vibegrowth-1.0.0.zip            Installable Blender extension
+  vibegrowth/
+      blender_manifest.toml       Extension metadata
+      __init__.py                 Settings, UI panel, operators, frame handler
+                                  and cache
+      sim.py                      The growth solver (growth, springs,
+                                  repulsion, smoothing, edge splitting and
+                                  re-triangulation)
+
+  Why not pure Geometry Nodes?
+  Geometry Nodes has no way to split individual edges by length and
+  re-triangulate around them, and no proper neighbour-to-neighbour
+  repulsion. VibeGrowth therefore solves the growth in Python (bmesh and
+  numpy). The output is a normal mesh with attributes, so you can keep
+  working on it with Geometry Nodes.
+
+================================================================================
